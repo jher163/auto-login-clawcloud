@@ -3,10 +3,11 @@ import os
 import time
 import pyotp
 from playwright.sync_api import sync_playwright
-# 【引入隐身插件】专门用来擦除浏览器的自动化指纹
-from playwright_stealth import stealth_sync 
+# 【核心修复】：针对 playwright-stealth 2.x 版本的最新导入语法
+from playwright_stealth import Stealth 
 
 def run_login():
+    # 从环境变量读取配置信息
     username = os.environ.get("GH_USERNAME")
     password = os.environ.get("GH_PASSWORD")
     totp_secret = os.environ.get("GH_2FA_SECRET")
@@ -17,8 +18,7 @@ def run_login():
 
     print("🚀 [Step 1] 启动有头浏览器(虚拟屏幕)并访问 ClawCloud...")
     with sync_playwright() as p:
-        # 【终极杀招 3：关闭无头模式 (headless=False)】
-        # 因为我们配置了 xvfb 虚拟屏幕，所以这里可以光明正大地开启真实界面！
+        # 关闭无头模式，并额外传入禁用自动化特征的参数
         browser = p.chromium.launch(
             headless=False, 
             args=["--disable-blink-features=AutomationControlled"]
@@ -26,8 +26,8 @@ def run_login():
         context = browser.new_context(viewport={'width': 1920, 'height': 1080})
         page = context.new_page()
 
-        # 【终极杀招 4：给页面披上隐身斗篷，抹除 webdriver 等机器特征】
-        stealth_sync(page)
+        # 【核心修复】：使用 2.x 版本的最新语法，为页面披上隐身斗篷
+        Stealth().apply_stealth_sync(page)
 
         # 1. 访问主页
         page.goto("https://ap-northeast-1.run.claw.cloud/")
@@ -71,7 +71,6 @@ def run_login():
                     token = pyotp.TOTP(totp_secret).now()
                     page.fill("#app_totp", token)
                     print(f"✅ 已填入 6 位验证码: {token}")
-                    # 尝试点击绿色的 Verify 按钮确保提交
                     try:
                         page.locator("button:has-text('Verify')").click(timeout=3000)
                         print("✅ 已主动点击 Verify 验证按钮")
@@ -87,7 +86,6 @@ def run_login():
 
         # 5. 处理授权页 (Authorize)
         print("⚠️ [Step 5] 检查授权请求...")
-        # 【扩大搜索范围】有些按钮自带特殊 ID 或者叫 authorize_app
         if "authorize" in page.url.lower() or page.locator("#js-oauth-authorize-btn").count() > 0:
             try:
                 auth_btn = page.locator("button[name='authorize_app'], #js-oauth-authorize-btn, button:has-text('Authorize')")
