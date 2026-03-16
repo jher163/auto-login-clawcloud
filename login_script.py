@@ -1,133 +1,48 @@
-# 文件名: login_script.py
-# 作用: 自动登录 ClawCloud Run，带有高级浏览器防风控伪装
+# 文件名: .github/workflows/clawcloud-login.yml
+name: ClawCloud Run Auto Login (2FA Support)
 
-import os
-import time
-import pyotp
-from playwright.sync_api import sync_playwright
+on:
+  schedule:
+    - cron: '0 0 */15 * *'
+  workflow_dispatch:
 
-def run_login():
-    username = os.environ.get("GH_USERNAME")
-    password = os.environ.get("GH_PASSWORD")
-    totp_secret = os.environ.get("GH_2FA_SECRET")
+jobs:
+  auto-login:
+    runs-on: ubuntu-latest
 
-    if not username or not password:
-        print("❌ 错误: 未设置账号密码环境变量。")
-        return
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    print("🚀 [Step 1] 启动浏览器并访问 ClawCloud...")
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        
-        # 【核心修复 1：伪装 User-Agent】
-        # 告诉网站：我不是自动化工具，我是真实 Windows 系统下的 Chrome 浏览器 122 版本
-        fake_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        
-        context = browser.new_context(
-            viewport={'width': 1920, 'height': 1080},
-            user_agent=fake_user_agent
-        )
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
 
-        # 【核心修复 2：抹除机器人指纹】
-        # 很多网站会通过 navigator.webdriver 来检测是不是机器人，这行代码就是把这个检测项给删掉
-        context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+      # 【终极杀招 1：安装虚拟显示器环境】
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
 
-        page = context.new_page()
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # 【新增】安装 playwright-stealth 隐身插件
+          pip install playwright pyotp playwright-stealth
+          playwright install chromium
 
-        # 1. 访问主页
-        page.goto("https://ap-northeast-1.run.claw.cloud/")
-        page.wait_for_load_state("networkidle")
-        page.wait_for_timeout(3000)
-        page.screenshot(path="01_home_page.png")
-        print("📸 已截图: 01_home_page.png")
+      - name: Run Login Script
+        env:
+          GH_USERNAME: ${{ secrets.GH_USERNAME }}
+          GH_PASSWORD: ${{ secrets.GH_PASSWORD }}
+          GH_2FA_SECRET: ${{ secrets.GH_2FA_SECRET }}
+        # 【终极杀招 2：用 xvfb-run 模拟真实桌面环境运行 Python，强制带上 -u 参数输出日志】
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python -u login_script.py
 
-        # 2. 点击 GitHub 按钮
-        print("🔍 [Step 2] 使用 JS 原生指令点击 GitHub 按钮...")
-        try:
-            login_button = page.locator("button.chakra-button:has-text('GitHub')")
-            if login_button.count() > 0:
-                login_button.first.evaluate("el => el.click()")
-            page.wait_for_timeout(3000)
-            page.screenshot(path="02_after_click_github.png")
-            print("📸 已截图: 02_after_click_github.png")
-        except Exception as e:
-            print(f"⚠️ 点击异常: {e}")
-
-        # 3. 填写 GitHub 账号密码
-        print("⏳ [Step 3] 检查 GitHub 登录页...")
-        try:
-            page.wait_for_url(lambda url: "github.com" in url, timeout=15000)
-            if "login" in page.url:
-                page.fill("#login_field", username)
-                page.fill("#password", password)
-                page.click("input[name='commit']")
-                page.wait_for_timeout(3000)
-            page.screenshot(path="03_github_login.png")
-            print("📸 已截图: 03_github_login.png")
-        except Exception as e:
-            print(f"ℹ️ 未进入账号密码填写页: {e}")
-
-        # 4. 处理 2FA 双重验证
-        print("🔐 [Step 4] 检查 2FA 双重验证...")
-        page.wait_for_timeout(3000)
-        if "two-factor" in page.url or page.locator("#app_totp").count() > 0:
-            if totp_secret:
-                try:
-                    token = pyotp.TOTP(totp_secret).now()
-                    page.fill("#app_totp", token)
-                    print(f"✅ 已填入 6 位验证码: {token}")
-                    
-                    # 【核心修复 3：确保提交验证码】
-                    # 尝试点击绿色的 Verify 按钮，防止 GitHub 没有自动跳转
-                    try:
-                        # 寻找并点击 Verify 按钮，最多等 3 秒
-                        page.locator("button:has-text('Verify')").click(timeout=3000)
-                        print("✅ 已主动点击 Verify 验证按钮")
-                    except:
-                        # 如果没找到，说明 GitHub 已经自动验证跳走了，忽略即可
-                        pass
-                        
-                    page.wait_for_timeout(3000)
-                except Exception as e:
-                    print(f"❌ 填入 2FA 失败: {e}")
-            else:
-                print("❌ 未配置 2FA 密钥！")
-        page.screenshot(path="04_after_2fa.png")
-        print("📸 已截图: 04_after_2fa.png")
-
-        # 5. 处理授权页 (Authorize)
-        print("⚠️ [Step 5] 检查授权请求...")
-        if "authorize" in page.url.lower():
-            try:
-                page.click("button:has-text('Authorize')", timeout=5000)
-                page.wait_for_timeout(3000)
-            except:
-                pass
-        page.screenshot(path="05_after_authorize.png")
-        print("📸 已截图: 05_after_authorize.png")
-
-        # 6. 等待最终跳转回控制台
-        print("⏳ [Step 6] 等待最终跳转结果 (15秒)...")
-        # 加上伪装后，回跳通常很顺利，我们等待它加载出控制台页面
-        page.wait_for_timeout(15000)
-        final_url = page.url
-        page.screenshot(path="06_final_result.png")
-        print("📸 已截图: 06_final_result.png")
-
-        # 验证结果
-        is_success = False
-        if page.get_by_text("App Launchpad").count() > 0 or "console" in final_url or "private-team" in final_url:
-            is_success = True
-        elif "signin" not in final_url and "github.com" not in final_url:
-            is_success = True
-
-        if is_success:
-            print("🎉🎉🎉 登录成功！")
-        else:
-            print("😭😭😭 登录失败。请检查最新截图。")
-            exit(1)
-
-        browser.close()
-
-if __name__ == "__main__":
-    run_login()
+      - name: Upload Debug Screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-debug-screenshots
+          path: "*.png"
